@@ -1,0 +1,8 @@
+# Written by the Claude Code engine into each mod as it loads; regenerated every time.
+*/.claude-plugin/types/
+*/tsconfig.json
+*.zip
+node_modules/
+__pycache__/
+*.egg-info/
+.DS_Store

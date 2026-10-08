@@ -1,0 +1,24 @@
+{
+  "name": "joshua-mods",
+  "owner": {
+    "name": "Joshua Gilbert"
+  },
+  "plugins": [
+    {
+      "name": "repo-sentry",
+      "source": "./repo-sentry",
+      "description": "Status line and warning band for repo, branch, sync and staged secrets"
+    },
+    {
+      "name": "progress-pulse",
+      "source": "./progress-pulse",
+      "description": "Live gradient progress band and /progress pane for the session's task list"
+    },
+    {
+      "name": "usage-meter",
+      "source": "./usage-meter",
+      "description": "5-hour and weekly plan limits, context fill and session cost above the message box"
+    }
+  ],
+  "description": "Joshua's Claude Code mods: repo health, live task progress and plan usage"
+}

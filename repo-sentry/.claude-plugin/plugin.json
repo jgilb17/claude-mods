@@ -1,0 +1,9 @@
+{
+  "name": "repo-sentry",
+  "version": "0.2.2",
+  "description": "Status line with business, repo, branch and dirty count, plus a warning band when on main or a secret file is staged",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Joshua Gilbert"
+  }
+}

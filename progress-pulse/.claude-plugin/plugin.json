@@ -1,0 +1,9 @@
+{
+  "name": "progress-pulse",
+  "version": "0.1.1",
+  "description": "A live, colorful progress bar for whatever this session is working on: a band above the prompt, a full /progress pane, and a celebration every time a task lands",
+  "author": {
+    "name": "Joshua Gilbert"
+  },
+  "types": "./types/index.d.ts"
+}

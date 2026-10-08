@@ -1,0 +1,7 @@
+{
+  "name": "usage-meter",
+  "version": "0.1.0",
+  "description": "Your Claude plan usage right above the message box: the 5-hour and weekly limits with reset times, plus this session's context fill",
+  "author": { "name": "Joshua Gilbert" },
+  "types": "./types/index.d.ts"
+}

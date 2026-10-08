@@ -1,0 +1,16 @@
+[project]
+name = "servicetrade-mcp"
+version = "0.2.0"
+description = "Read-only MCP server for the ServiceTrade API (GET only, username and password login)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.0.0",
+    "requests>=2.28.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["servicetrade_mcp"]
