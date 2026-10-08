@@ -91,10 +91,19 @@ test('before any reading it says what will appear', async ($, on) => {
 test('/usage-meter hides and shows it', async ($, on) => {
   world(on, [])
   await $.session.measure(measure(38, 22, 61) as never)
-  await $.command.run({ command: 'usage-meter', args: '' } as never)
+  await $.command.run({ command: 'usage-meter', args: 'hide' } as never)
   let ui = await $.ui.mount({ plugin: 'usage-meter', surface: 'terminal', component: 'AbovePrompt', props: PROPS as never })
   expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('|')).toBe('band above')
-  await $.command.run({ command: 'usage-meter', args: '' } as never)
+  await $.command.run({ command: 'usage-meter', args: 'show' } as never)
   ui = await $.ui.mount({ plugin: 'usage-meter', surface: 'terminal', component: 'AbovePrompt', props: PROPS as never })
   expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('|')).toContain('38%')
+})
+
+test('/usage-meter with no argument answers in text', async ($, on) => {
+  world(on, [])
+  await $.session.measure(measure(38, 22, 61) as never)
+  const r = await $.command.run({ command: 'usage-meter', args: '' } as never) as { text?: string }
+  expect(r.text).toContain('5-hour')
+  expect(r.text).toContain('38%')
+  expect(r.text).toContain('Context 61% of 200k')
 })

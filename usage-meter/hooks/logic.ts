@@ -1,4 +1,4 @@
-import type { Limit } from '../types'
+import type { Limit, Reading } from '../types'
 
 export const LABEL: Record<string, string> = { five_hour: '5-hour', seven_day: 'Week', spend_limit: 'Spend' }
 export const label = (kind: string) => LABEL[kind] ?? kind.replace(/_/g, ' ')
@@ -45,3 +45,17 @@ export function crossed(before: number | undefined, after: number): number | nul
 
 export const money = (usd: number) => (usd < 10 ? `$${usd.toFixed(2)}` : `$${Math.round(usd)}`)
 export const k = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M` : `${Math.round(n / 1000)}k`)
+
+// The reading as plain text, for /usage-meter and for screens that draw no bands.
+export function textReading(r: Reading | null, now: number): string {
+  if (!r) return 'No usage reading yet. It arrives with the first reply in this session.'
+  const out: string[] = []
+  for (const l of ordered(r.limits)) {
+    const m = meter(l.percentUsed, 20)
+    out.push(`${label(l.kind).padEnd(7)} ${m.filled}${m.empty}  ${l.percentUsed}%  ${resetText(l.resetsAt, now)}`.trimEnd())
+  }
+  if (!r.limits.length) out.push('Plan limits: no reading from Claude Code yet in this session.')
+  if (r.contextPercent !== null) out.push(`Context ${r.contextPercent}% of ${k(r.contextWindow)}`)
+  if (r.costUsd !== null) out.push(`${money(r.costUsd)} this session at API rates`)
+  return out.join('\n')
+}

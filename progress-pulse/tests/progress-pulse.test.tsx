@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { bar, counts, eta, fromTodos, gradient, milestonesCrossed, runs, upsert } from '../hooks/logic'
+import { bar, counts, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, upsert } from '../hooks/logic'
 import type { Task } from '../types'
 
 const T = (id: string, status: Task['status'], extra: Partial<Task> = {}): Task =>
@@ -185,4 +185,16 @@ test('the band line fits a narrow column without wrapping', async ($, on) => {
   expect(line.length + 2 + 4).toBeLessThanOrEqual(60)
   expect(line).toContain('session ')
   expect(line).toContain(' 100%')
+})
+
+test('/progress also answers in text, for screens that draw no bands', async ($, on) => {
+  world(on, [])
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Alpha', description: 'x' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Beta', description: 'x' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as never)
+  const r = await $.command.run({ command: 'progress', args: '' } as never) as { text?: string }
+  expect(r.text).toContain('50%')
+  expect(r.text).toContain('✓ Alpha')
+  expect(r.text).toContain('○ Beta')
+  expect(textReport([], 'x', 0)).toContain('no task list yet')
 })

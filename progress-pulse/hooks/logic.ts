@@ -105,3 +105,17 @@ export function fromTodos(prev: Task[], todos: { content: string; status: TaskSt
 }
 
 export const today = (now: number) => new Date(now).toISOString().slice(0, 10)
+
+// The whole picture as plain text, for a screen that draws no bands or panes.
+export function textReport(tasks: Task[], project: string, elapsedMs: number): string {
+  if (!tasks.length) return `${project}: no task list yet. Progress appears once the session breaks the work into tasks.`
+  const c = counts(tasks)
+  const cells = bar(c, 20).map(x => x.ch).join('')
+  const lines = [`${project}  ${cells}  ${c.pct}%  ${c.done} of ${c.total} done  ·  ${duration(elapsedMs)}`]
+  for (const t of tasks) {
+    lines.push(t.status === 'completed' ? `  ✓ ${t.subject}` : t.status === 'in_progress' ? `  ▶ ${t.activeForm || t.subject}` : `  ○ ${t.subject}`)
+  }
+  const left = eta(tasks)
+  if (left) lines.push(`  about ${duration(left)} left (estimate from the measured average)`)
+  return lines.join('\n')
+}

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Celebration, Task } from '../types'
-import { bar, counts, duration, eta, fromTodos, gradient, milestonesCrossed, runs, today, upsert } from './logic'
+import { bar, counts, duration, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, today, upsert } from './logic'
 
 const tasksA = atom({ plugin: 'progress-pulse', key: 'tasks' } as const, [] as Task[])
 const startA = atom({ plugin: 'progress-pulse', key: 'sessionStart' } as const, 0)
@@ -99,8 +99,13 @@ export const register: Register = on => {
       })
       return { text: 'Running a 12 second demo in the band above the prompt.' }
     }
-    await $.ui.open({ id: PANE, title: 'Progress' })
-    return { text: 'Progress pane opened.' }
+    try { await $.ui.open({ id: PANE, title: 'Progress' }) } catch { /* a screen with no panes: the text below still answers */ }
+    // Also answer in text: sessions whose screen does not draw mod bands or panes (a cloud
+    // session viewed from the app) still get the picture as a transcript line.
+    const tasks = await read($, tasksA)
+    const now = await $.clock.now()
+    const started = await read($, startA)
+    return { text: textReport(tasks, (await read($, projectA)) || 'this session', now - (started || now)) }
   })
 
   // The session's own task list is the source of truth: every TaskCreate, TaskUpdate and

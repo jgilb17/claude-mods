@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMeasureInput, SessionUsage } from 'claude-code'
 
 import type { Reading } from '../types'
-import { crossed, k, label, meter, money, ordered, resetText, tone } from './logic'
+import { crossed, k, label, meter, money, ordered, resetText, textReading, tone } from './logic'
 
 const readingA = atom({ plugin: 'usage-meter', key: 'reading' } as const, null as Reading | null)
 const hiddenA = atom({ plugin: 'usage-meter', key: 'hidden' } as const, false)
@@ -35,7 +35,7 @@ export const register: Register = on => {
       const u = await $.session.usage()
       await store($, toReading(u, await $.clock.now()))
     } catch { /* the band waits for the first measurement instead */ }
-    await $.command.register({ name: 'usage-meter', description: 'Show or hide the usage meter above the message box' })
+    await $.command.register({ name: 'usage-meter', description: 'Show plan usage now; add hide or show to toggle the meter above the message box' })
     return r
   })
 
@@ -45,9 +45,17 @@ export const register: Register = on => {
     return r
   })
 
-  on('command.run', { command: 'usage-meter' }, async $ => {
-    const now = await update($, hiddenA, h => !h)
-    return { text: now ? 'Usage meter hidden. Run /usage-meter again to show it.' : 'Usage meter shown.' }
+  // /usage-meter prints the reading as text (screens that draw no bands still see it);
+  // /usage-meter hide and /usage-meter show toggle the band.
+  on('command.run', { command: 'usage-meter' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    if (arg === 'hide' || arg === 'show') {
+      await update($, hiddenA, () => arg === 'hide')
+      return { text: arg === 'hide' ? 'Usage meter hidden. /usage-meter show brings it back.' : 'Usage meter shown.' }
+    }
+    let r = await read($, readingA)
+    try { r = toReading(await $.session.usage(), await $.clock.now()) } catch { /* keep the last reading */ }
+    return { text: textReading(r, await $.clock.now()) }
   })
 
   // Drawn below any other band, so it sits directly on top of the message box.
