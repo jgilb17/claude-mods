@@ -399,18 +399,24 @@ export const register: Register = on => {
     )
 
     const crew = currentBatch(await read($, agentsA))
-    const crewView = crew.length ? await crewSection($, { Box, Text, Svg: e.surface !== 'terminal' ? ($.ui.resolve(e) as unknown as { Svg: El }).Svg : null }, crew, tasks, now) : null
+    const PaneSvg = e.surface !== 'terminal' ? ($.ui.resolve(e) as unknown as { Svg: El }).Svg : null
+    const crewView = crew.length ? await crewSection($, { Box, Text, Svg: PaneSvg }, crew, tasks, now) : null
+    // The task list's own bar: the band's dotted track where vectors draw. The block-character bar
+    // is for the terminal; on the desktop it wrapped into four green stripes nobody could read.
+    const taskBar = PaneSvg
+      ? <PaneSvg source={trackSvg(c.pct, c.done === c.total ? 'Done' : `${c.done}/${c.total}`, c.done === c.total ? 'done' : 'running', 300)} alt={`Tasks ${c.pct}%`} width={300} height={TRACK_H} />
+      : <Box flexDirection="column">{barRow('b1')}{barRow('b2')}</Box>
 
     return (
       <Box flexDirection="column">
         <Text bold>{`${project || 'This session'}`}</Text>
         <Text> </Text>
         {crewView}
-        {crewView ? <Text bold>Plan</Text> : null}
+        {crewView ? <Text bold>Session tasks</Text> : null}
         {tasks.length === 0 && crew.length ? <Text dimColor>No task list in the main session yet.</Text> : tasks.length === 0
           ? <Text dimColor>No task list yet. Progress appears as soon as the session breaks the work into tasks.</Text>
           : <Box flexDirection="column">
-              {barRow('b1')}{barRow('b2')}
+              {taskBar}
               <Text> </Text>
               <Text>
                 <Text bold color={gradient(c.pct / 100)}>{`${c.pct}%`}</Text>
@@ -439,11 +445,17 @@ export const register: Register = on => {
               <Text> </Text>
               <Text bold>Today across projects</Text>
               {Object.entries(tally).sort((x, y) => y[1] - x[1]).map(([name, n], i) => (
-                <Text>
-                  <Text>{name.padEnd(22).slice(0, 22)}</Text>
-                  <Text color={gradient(n / most)}>{'█'.repeat(Math.max(1, Math.round((n / most) * 24)))}</Text>
-                  <Text bold>{`  ${n}`}</Text>
-                </Text>
+                PaneSvg
+                  ? <Box key={name} flexDirection="row" columnGap={1} alignItems="center">
+                      <Text>{name.slice(0, 22)}</Text>
+                      <PaneSvg source={miniBarSvg(n / most, gradient(n / most), 160)} alt={`${name}: ${n} done`} width={160} height={BAR_H} />
+                      <Text bold>{`${n}`}</Text>
+                    </Box>
+                  : <Text>
+                      <Text>{name.padEnd(22).slice(0, 22)}</Text>
+                      <Text color={gradient(n / most)}>{'█'.repeat(Math.max(1, Math.round((n / most) * 24)))}</Text>
+                      <Text bold>{`  ${n}`}</Text>
+                    </Text>
               ))}
             </Box>
           : null}

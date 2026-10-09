@@ -144,6 +144,10 @@ test('the pane lists every task with its state', async ($, on) => {
     expect(text).toContain('50%')
     expect(text).toContain('Alpha')
     expect(text).toContain('Building Beta')
+    if (surface === 'desktop') {
+      expect(text).not.toContain('█')
+      expect((await ui.findAll({ type: 'Svg' })).length).toBeGreaterThanOrEqual(1)
+    } else expect(text).toContain('█')
   }
 })
 
@@ -257,6 +261,7 @@ test('a crew of subagents shows in the band, the pane and the text report', asyn
   expect(paneText).toContain('Finished · 1')
   expect(paneText).toContain('careful')
   expect(paneText).toContain('heavy')
+  expect(paneText).not.toContain('█')
 
   const term = await $.ui.mount({ plugin: 'progress-pulse', surface: 'terminal', component: 'Pane', requestId: 'progress-pulse', props: PANE as never } as never)
   expect((await term.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('Running · 1')
