@@ -18,7 +18,12 @@
       "name": "usage-meter",
       "source": "./usage-meter",
       "description": "5-hour and weekly plan limits, context fill and session cost above the message box"
+    },
+    {
+      "name": "model-router",
+      "source": "./model-router",
+      "description": "Picks the right model for every subagent: Haiku for lookups, Sonnet for building, Opus for judgment calls"
     }
   ],
-  "description": "Joshua's Claude Code mods: repo health, live task progress and plan usage"
+  "description": "Joshua's Claude Code mods: repo health, live task progress, plan usage and model routing"
 }

@@ -1,0 +1,6 @@
+{
+  "name": "model-router",
+  "version": "0.1.0",
+  "description": "Picks the right model for every subagent without being told: Haiku for lookups, Sonnet for building, Opus for judgment calls",
+  "author": { "name": "Joshua Gilbert" }
+}
