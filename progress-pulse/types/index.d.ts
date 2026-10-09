@@ -12,6 +12,24 @@ export type Task = {
 
 export type Celebration = { text: string; big: boolean; until: number }
 
+export type AgentStatus = 'running' | 'done' | 'failed'
+
+export type Agent = {
+  id: string
+  name: string
+  type: string
+  model: string
+  background: boolean
+  status: AgentStatus
+  startedAt: number
+  endedAt: number | null
+  steps: number
+  stepLabel: string
+  tokens: number
+  tasksDone: number
+  tasksTotal: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'progress-pulse': {
@@ -20,6 +38,8 @@ declare module 'claude-code' {
       celebration: Celebration | null
       project: string
       bandHidden: boolean
+      agents: Agent[]
+      paneOpened: boolean
     }
   }
 }

@@ -1,14 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Celebration, Task } from '../types'
+import type { Agent, Celebration, Task } from '../types'
 import { bar, counts, duration, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, today, upsert } from './logic'
+import { agentClock, agentsText, agentTasks, botSvg, compactTokens, currentBatch, finished, fraction, miniBarSvg, modelName, spawned, stepped, stepText, tier, trackSvg } from './agents'
 
 const tasksA = atom({ plugin: 'progress-pulse', key: 'tasks' } as const, [] as Task[])
 const startA = atom({ plugin: 'progress-pulse', key: 'sessionStart' } as const, 0)
 const cheerA = atom({ plugin: 'progress-pulse', key: 'celebration' } as const, null as Celebration | null)
 const projectA = atom({ plugin: 'progress-pulse', key: 'project' } as const, '')
 const hiddenA = atom({ plugin: 'progress-pulse', key: 'bandHidden' } as const, false)
+const agentsA = atom({ plugin: 'progress-pulse', key: 'agents' } as const, [] as Agent[])
+const paneOpenedA = atom({ plugin: 'progress-pulse', key: 'paneOpened' } as const, false)
+
+const usageTokens = (u: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined) =>
+  u ? (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) : 0
 
 const PANE = 'progress-pulse'
 const CHEER_MS = 8000
@@ -68,6 +74,71 @@ async function apply($: EngineInterface, change: (prev: Task[], now: number) => 
   } catch { /* the tally is a nicety; never let it break a tool call */ }
 }
 
+// The Agents section: what the crew cost and how far each one has got.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type El = any
+async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El | null }, crew: Agent[], tasks: Task[], now: number) {
+  const { Box, Text, Svg } = els
+  let usd: number | null = null
+  try { const u = await $.session.usage(); usd = u.cost ? u.cost.usd : null } catch { /* no ledger on this host */ }
+  const tokens = crew.reduce((x, a) => x + a.tokens, 0)
+  const first = Math.min(...crew.map(a => a.startedAt))
+  const last = crew.some(a => a.status === 'running') ? now : Math.max(...crew.map(a => a.endedAt ?? now))
+  const running = crew.filter(a => a.status === 'running')
+  const ended = crew.filter(a => a.status !== 'running')
+  const planned = tasks.filter(t => t.status === 'pending')
+
+  const tile = (label: string, value: string, note: string) => (
+    <Box key={label} flexDirection="column" borderStyle="round" paddingX={1} flexGrow={1}>
+      <Text dimColor>{label}</Text>
+      <Text bold>{value}</Text>
+      <Text dimColor>{note}</Text>
+    </Box>
+  )
+  const row = (a: Agent) => {
+    const t = tier(a.model, a.type)
+    const live = a.status === 'running'
+    const step = a.tasksTotal ? `${a.tasksDone}/${a.tasksTotal} · ${a.stepLabel}` : a.stepLabel
+    const mark = a.status === 'done' ? <Text color="#2ec27e">{'✓'}</Text> : a.status === 'failed' ? <Text color="#e5484d">{'✕'}</Text> : <Text color={t.color}>{'●'}</Text>
+    return (
+      <Box key={a.id} flexDirection="row" columnGap={1} alignItems="center" marginBottom={1}>
+        {Svg ? <Svg source={botSvg(t.color, { cell: 3, bounce: live })} alt={`${t.label} agent`} isInteractive={live} /> : null}
+        <Box flexDirection="column" flexGrow={1}>
+          <Text>
+            <Text bold>{a.name.slice(0, 40)}</Text>
+            <Text color={t.color}>{'  ' + t.label}</Text>
+            <Text dimColor>{`  ${modelName(a.model)} · ${a.type}`}</Text>
+          </Text>
+          <Text dimColor={!live}>{live ? step : a.status === 'done' ? 'Finished' : 'Stopped before finishing'}</Text>
+          {Svg
+            ? <Svg source={miniBarSvg(a.status === 'running' ? fraction(a) : 1, a.status === 'failed' ? '#e5484d' : t.color, 260)} alt="progress" isInteractive={live} />
+            : null}
+          <Text dimColor>{`${a.tokens ? compactTokens(a.tokens) + ' tokens · ' : ''}${agentClock((a.endedAt ?? now) - a.startedAt)}`}</Text>
+        </Box>
+        {mark}
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column">
+      <Text bold>{`Agents  ${ended.length} of ${crew.length} finished`}</Text>
+      <Box flexDirection="row" columnGap={1}>
+        {tile('Cost', usd !== null ? `$${usd.toFixed(2)}` : 'n/a', 'whole session, API rates')}
+        {tile('Tokens', compactTokens(tokens), 'agents, measured')}
+        {tile('Time', agentClock(last - first), 'this crew')}
+      </Box>
+      <Text> </Text>
+      {running.length ? <Text bold color="#8b7cf6">{`Running · ${running.length}`}</Text> : null}
+      {running.map(row)}
+      {ended.length ? <Text bold color="#2ec27e">{`Finished · ${ended.length}`}</Text> : null}
+      {ended.map(row)}
+      {planned.length ? <Text bold dimColor>{`Planned · ${planned.length}`}</Text> : null}
+      {planned.slice(0, 6).map(t => <Text key={t.id} dimColor>{'◷ ' + t.subject}</Text>)}
+      <Text> </Text>
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
@@ -105,7 +176,9 @@ export const register: Register = on => {
     const tasks = await read($, tasksA)
     const now = await $.clock.now()
     const started = await read($, startA)
-    return { text: textReport(tasks, (await read($, projectA)) || 'this session', now - (started || now)) }
+    const crewText = agentsText(currentBatch(await read($, agentsA)), now)
+    const report = textReport(tasks, (await read($, projectA)) || 'this session', now - (started || now))
+    return { text: tasks.length || !crewText ? report + (crewText ? '\n' + crewText : '') : crewText }
   })
 
   // The session's own task list is the source of truth: every TaskCreate, TaskUpdate and
@@ -113,13 +186,18 @@ export const register: Register = on => {
   on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
     const r = await next(e)
     const id = r.deny === undefined && !r.isError ? r.result?.task?.id : undefined
-    if (id) await apply($, (prev, now) => upsert(prev, String(id), { subject: e.subject, activeForm: e.activeForm ?? null }, now))
+    if (id && e.agentId) await update($, agentsA, l => agentTasks(l, String(e.agentId), { created: 1 }))
+    else if (id) await apply($, (prev, now) => upsert(prev, String(id), { subject: e.subject, activeForm: e.activeForm ?? null }, now))
     return r
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
     const r = await next(e)
     if (r.deny !== undefined || r.isError || r.result?.success === false) return r
+    if (e.agentId) {
+      if (e.status === 'completed') await update($, agentsA, l => agentTasks(l, String(e.agentId), { completed: 1 }))
+      return r
+    }
     const id = String(e.taskId)
     if (e.status === 'deleted') {
       await apply($, prev => prev.filter(t => t.id !== id))
@@ -135,7 +213,48 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const r = await next(e)
-    if (r.deny === undefined && !r.isError) await apply($, (prev, now) => fromTodos(prev, e.todos, now))
+    if (r.deny === undefined && !r.isError && e.agentId) {
+      await update($, agentsA, l => agentTasks(l, String(e.agentId), { total: e.todos.length, done: e.todos.filter(t => t.status === 'completed').length }))
+    } else if (r.deny === undefined && !r.isError) await apply($, (prev, now) => fromTodos(prev, e.todos, now))
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // The crew: every subagent the session starts (Agent tool, workflows, forks) gets a card.
+  on('agent.spawn', async ($, e, next) => {
+    const r = await next(e)
+    if (r.deny === undefined && r.agentId) {
+      const now = await $.clock.now()
+      await update($, agentsA, l => spawned(l, { id: r.agentId!, name: e.description || e.subagentType, type: e.subagentType, model: r.model || e.model || e.parentModel, background: e.background }, now))
+      if (!(await read($, paneOpenedA))) {
+        await update($, paneOpenedA, () => true)
+        try { await $.ui.open({ id: PANE, title: 'Progress' }) } catch { /* a screen with no panes */ }
+      }
+    }
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // Each tool call an agent makes moves its card: a step counted and a few words on what it is doing.
+  on('tool.call', async ($, e, next) => {
+    const r = await next(e)
+    if (e.agentId) {
+      const label = stepText(e.tool, e as unknown as Record<string, unknown>)
+      await update($, agentsA, l => stepped(l, String(e.agentId), label))
+    }
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // An agent's turn ending is the agent finishing: its tokens are what the API reported for it.
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    if (e.agentId) {
+      const now = await $.clock.now()
+      const ok = e.reason === 'answer'
+      await update($, agentsA, l => finished(l, String(e.agentId), ok, usageTokens(e.usage), now))
+      const batch = currentBatch(await read($, agentsA))
+      if (batch.length > 1 && batch.every(a => a.status !== 'running')) {
+        $.ui.toast(`Crew finished: ${batch.filter(a => a.status === 'done').length} of ${batch.length} agents done.`, { timeoutMs: 6000 })
+      }
+    }
     return r
   }).catch(($, e, next) => next(e))
 
@@ -143,17 +262,76 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     const tasks = await read($, tasksA)
-    if (e.props.hasSurvey || !tasks.length || (await read($, hiddenA))) return below
+    const crew = currentBatch(await read($, agentsA))
+    if (e.props.hasSurvey || (!tasks.length && !crew.length) || (await read($, hiddenA))) return below
     const now = await $.clock.now()
     const c = counts(tasks)
-    const lastDone = Math.max(0, ...tasks.map(t => t.doneAt ?? 0))
+    const crewDone = crew.filter(a => a.status !== 'running').length
+    const lastDone = Math.max(0, ...tasks.map(t => t.doneAt ?? 0), ...crew.map(a => a.endedAt ?? 0))
     const cheer = await read($, cheerA)
     const cheering = cheer && cheer.until > now
-    if (c.done === c.total && now - lastDone > QUIET_AFTER_DONE_MS && !cheering) return below
+    const allDone = (tasks.length ? c.done === c.total : true) && crewDone === crew.length
+    if (allDone && now - lastDone > QUIET_AFTER_DONE_MS && !cheering) return below
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const project = await read($, projectA)
     const started = await read($, startA)
+
+    // Screens that draw vectors (the desktop app, VS Code, mobile): the animated pixel track,
+    // a pill riding its leading edge, and the crew count beside a bobbing bot.
+    if (e.surface !== 'terminal') {
+      const { Svg } = $.ui.resolve(e) as unknown as { Svg: El }
+      const pct = tasks.length ? c.pct : Math.round((crewDone / Math.max(1, crew.length)) * 100)
+      const done = pct >= 100 && allDone
+      const active = tasks.find(t => t.status === 'in_progress')
+      const word = done ? 'Done' : (active?.activeForm || active?.subject || (crew.some(a => a.status === 'running') ? 'Agents working' : 'Next up')).split(/\s+/).slice(0, 2).join(' ')
+      const count = tasks.length ? `${c.done}/${c.total}` : `${crewDone}/${crew.length}`
+      const label = done ? 'Done' : `${word} ${count}`
+      const title = (project || 'This session').slice(0, 28)
+      const dot = done ? '#2ec27e' : '#8b7cf6'
+      const running = crew.some(a => a.status === 'running')
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Text color={dot}>{'●'}</Text>
+            <Text bold>{title}</Text>
+            <Svg source={trackSvg(pct, label, done ? 'done' : 'running', 300)} alt={`${title}: ${pct}% (${label})`} isInteractive />
+            <Text bold>{`${pct}%`}</Text>
+            {crew.length
+              ? <Box flexDirection="row" alignItems="center" columnGap={1}>
+                  <Svg source={botSvg(done ? '#2ec27e' : '#ff6b35', { cell: 2.4, bounce: running })} alt="crew" isInteractive />
+                  <Text>{`×${crew.length}`}</Text>
+                </Box>
+              : null}
+            <Button key="hide" plain label="✕" onPress={() => update($, hiddenA, () => true)} />
+          </Box>
+          {cheering
+            ? <Text bold color={cheer!.big ? '#2ec27e' : 'success'}>{(cheer!.big ? '★ ' : '✦ ') + cheer!.text}</Text>
+            : active
+              ? <Text wrap="truncate-end">
+                  <Text color={dot}>{'▶ '}</Text>
+                  <Text>{active.activeForm || active.subject}</Text>
+                  <Text dimColor>{(tasks.find(t => t.status === 'pending') ? '   next: ' + tasks.find(t => t.status === 'pending')!.subject : '') + (tasks.length ? `   ${c.done} of ${c.total}` : '')}</Text>
+                </Text>
+              : null}
+          {below}
+        </Box>
+      )
+    }
+
+    if (!tasks.length) {
+      return (
+        <Box flexDirection="column">
+          <Text>
+            <Text bold color="#8b7cf6">{'◆ '}</Text>
+            <Text bold>{(project || 'session') + ' '}</Text>
+            <Text>{`agents ${crewDone}/${crew.length} done`}</Text>
+            <Text dimColor>{'  ·  ' + crew.filter(a => a.status === 'running').map(a => a.name).slice(0, 2).join(', ')}</Text>
+          </Text>
+          {below}
+        </Box>
+      )
+    }
     // Size the bar to what is left of the line after the fixed text, so the band never wraps,
     // including when the /progress pane is docked beside the transcript and narrows it.
     const name = (project || 'session').slice(0, 24)
@@ -214,11 +392,16 @@ export const register: Register = on => {
       </Box>
     )
 
+    const crew = currentBatch(await read($, agentsA))
+    const crewView = crew.length ? await crewSection($, { Box, Text, Svg: e.surface !== 'terminal' ? ($.ui.resolve(e) as unknown as { Svg: El }).Svg : null }, crew, tasks, now) : null
+
     return (
       <Box flexDirection="column">
         <Text bold>{`${project || 'This session'}`}</Text>
         <Text> </Text>
-        {tasks.length === 0
+        {crewView}
+        {crewView ? <Text bold>Plan</Text> : null}
+        {tasks.length === 0 && crew.length ? <Text dimColor>No task list in the main session yet.</Text> : tasks.length === 0
           ? <Text dimColor>No task list yet. Progress appears as soon as the session breaks the work into tasks.</Text>
           : <Box flexDirection="column">
               {barRow('b1')}{barRow('b2')}

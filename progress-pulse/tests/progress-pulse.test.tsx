@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { agentsText, botSvg, currentBatch, finished, fraction, modelName, spawned, stepped, stepText, tier, trackSvg } from '../hooks/agents'
 import { bar, counts, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, upsert } from '../hooks/logic'
 import type { Task } from '../types'
 
@@ -87,7 +88,7 @@ test('the band tracks the real task list, cheers a finish, and keeps the band be
     const ui = await $.ui.mount({ plugin: 'progress-pulse', surface, component: 'AbovePrompt', props: PROPS as never })
     const text = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
     expect(text).toContain('0%')
-    expect(text).toContain('0 of 4')
+    expect(text).toContain(surface === 'terminal' ? '0 of 4' : '0%')
     expect(text).toContain('Writing the fix')
     expect(text).toContain('next: Test it')
     expect(text).toContain('engine band')
@@ -197,4 +198,64 @@ test('/progress also answers in text, for screens that draw no bands', async ($,
   expect(r.text).toContain('✓ Alpha')
   expect(r.text).toContain('○ Beta')
   expect(textReport([], 'x', 0)).toContain('no task list yet')
+})
+
+test('agents: model names, tiers and the step a subagent is on', () => {
+  expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
+  expect(tier('claude-opus-5-5', 'general-purpose').label).toBe('heavy')
+  expect(tier('claude-haiku-4-5', 'general-purpose').label).toBe('light')
+  expect(tier('claude-opus-5-5', 'Explore').label).toBe('careful')
+  expect(stepText('Read', { file_path: '/a/b/register.tsx' })).toContain('register.tsx')
+  let crew = spawned([], { id: 'a1', name: 'Audit hooks', type: 'Explore', model: 'claude-sonnet-4-6', background: false }, 1000)
+  crew = stepped(crew, 'a1', 'Reading files')
+  expect(crew[0]).toMatchObject({ steps: 1, stepLabel: 'Reading files', status: 'running' })
+  expect(fraction(crew[0]!)).toBe(null)
+  crew = finished(crew, 'a1', true, 12_000, 61_000)
+  expect(crew[0]).toMatchObject({ status: 'done', tokens: 12_000, endedAt: 61_000 })
+  expect(currentBatch(crew).length).toBe(1)
+  expect(agentsText(crew, 61_000)).toContain('✓ Audit hooks')
+  expect(trackSvg(40, 'Review 3/4', 'running')).toContain('Review 3/4')
+  expect(botSvg('#ff6b35', { bounce: true })).toContain('animateTransform')
+})
+
+function crewWorld(on: On) {
+  world(on, [])
+  let n = 0
+  on('agent.spawn', async (_$, e) => ({ agentId: 'ag' + (++n), model: (e as { model?: string }).model ?? 'claude-opus-5-5' }) as never)
+  on('turn.complete', async (_$, e) => ({ text: (e as { answer: string }).answer }) as never)
+  on('ui.open', async () => ({ value: { isPlaced: true } }) as never)
+  on('session.usage', async () => ({ value: { startedAt: 0, context: {}, rateLimits: {}, cost: { usd: 4.25 } } }) as never)
+}
+
+test('a crew of subagents shows in the band, the pane and the text report', async ($, on) => {
+  crewWorld(on)
+  const a = await $.agent.spawn({ description: 'Audit the hooks', prompt: 'x', subagentType: 'Explore', model: 'claude-sonnet-4-6' } as never) as { agentId: string }
+  const b = await $.agent.spawn({ description: 'Write the tests', prompt: 'x', subagentType: 'general-purpose', model: 'claude-opus-5-5' } as never) as { agentId: string }
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'Listing hook files', agentId: a.agentId } as never)
+  await $.turn.complete({ agentId: b.agentId, answer: 'done', isAborted: false, turnId: 't1', reason: 'answer', usage: { input_tokens: 9000, output_tokens: 3000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, durationMs: 1000 } as never)
+
+  const band = await $.ui.mount({ plugin: 'progress-pulse', surface: 'desktop', component: 'AbovePrompt', props: PROPS as never })
+  const bandText = (await band.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(bandText).toContain('50%')
+  expect(bandText).toContain('×2')
+  expect((await band.findAll({ type: 'Svg' })).length).toBe(2)
+
+  const PANE = { bodyColumns: 80, bodyRows: 40, holdToasts: false, title: 'Progress' }
+  const pane = await $.ui.mount({ plugin: 'progress-pulse', surface: 'desktop', component: 'Pane', requestId: 'progress-pulse', props: PANE as never } as never)
+  const paneText = (await pane.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(paneText).toContain('Agents  1 of 2 finished')
+  expect(paneText).toContain('$4.25')
+  expect(paneText).toContain('12k')
+  expect(paneText).toContain('Running · 1')
+  expect(paneText).toContain('Listing hook files')
+  expect(paneText).toContain('Finished · 1')
+  expect(paneText).toContain('careful')
+  expect(paneText).toContain('heavy')
+
+  const term = await $.ui.mount({ plugin: 'progress-pulse', surface: 'terminal', component: 'Pane', requestId: 'progress-pulse', props: PANE as never } as never)
+  expect((await term.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('Running · 1')
+
+  const r = await $.command.run({ command: 'progress', args: '' } as never) as { text?: string }
+  expect(r.text).toContain('Agents  1 of 2 finished')
+  expect(r.text).toContain('● Audit the hooks')
 })
