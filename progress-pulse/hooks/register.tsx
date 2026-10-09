@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Agent, Celebration, Task } from '../types'
 import { bar, counts, duration, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, today, upsert } from './logic'
-import { agentClock, agentsText, agentTasks, botSvg, compactTokens, currentBatch, finished, fraction, miniBarSvg, modelName, spawned, stepped, stepText, tier, trackSvg } from './agents'
+import { agentClock, agentsText, agentTasks, BAR_H, botSize, botSvg, pillWords, TRACK_H, compactTokens, currentBatch, finished, fraction, miniBarSvg, modelName, spawned, stepped, stepText, tier, trackSvg } from './agents'
 
 const tasksA = atom({ plugin: 'progress-pulse', key: 'tasks' } as const, [] as Task[])
 const startA = atom({ plugin: 'progress-pulse', key: 'sessionStart' } as const, 0)
@@ -14,7 +14,9 @@ const agentsA = atom({ plugin: 'progress-pulse', key: 'agents' } as const, [] as
 const paneOpenedA = atom({ plugin: 'progress-pulse', key: 'paneOpened' } as const, false)
 
 const usageTokens = (u: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined) =>
-  u ? (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) : 0
+  // Cache reads are left out: every request of a subagent re-reads its whole cached prompt, so
+  // counting them made three 9-second Haiku agents read as 1.3M tokens in the 0.2.0 pane.
+  u ? (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) : 0
 
 const PANE = 'progress-pulse'
 const CHEER_MS = 8000
@@ -102,7 +104,7 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
     const mark = a.status === 'done' ? <Text color="#2ec27e">{'✓'}</Text> : a.status === 'failed' ? <Text color="#e5484d">{'✕'}</Text> : <Text color={t.color}>{'●'}</Text>
     return (
       <Box key={a.id} flexDirection="row" columnGap={1} alignItems="center" marginBottom={1}>
-        {Svg ? <Svg source={botSvg(t.color, { cell: 3, bounce: live })} alt={`${t.label} agent`} isInteractive={live} /> : null}
+        {Svg ? <Svg source={botSvg(t.color, { cell: 3, bounce: live })} alt={`${t.label} agent`} {...botSize(3)} /> : null}
         <Box flexDirection="column" flexGrow={1}>
           <Text>
             <Text bold>{a.name.slice(0, 40)}</Text>
@@ -111,7 +113,7 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
           </Text>
           <Text dimColor={!live}>{live ? step : a.status === 'done' ? 'Finished' : 'Stopped before finishing'}</Text>
           {Svg
-            ? <Svg source={miniBarSvg(a.status === 'running' ? fraction(a) : 1, a.status === 'failed' ? '#e5484d' : t.color, 260)} alt="progress" isInteractive={live} />
+            ? <Svg source={miniBarSvg(a.status === 'running' ? fraction(a) : 1, a.status === 'failed' ? '#e5484d' : t.color, 260)} alt="progress" width={260} height={BAR_H} />
             : null}
           <Text dimColor>{`${a.tokens ? compactTokens(a.tokens) + ' tokens · ' : ''}${agentClock((a.endedAt ?? now) - a.startedAt)}`}</Text>
         </Box>
@@ -124,7 +126,7 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
       <Text bold>{`Agents  ${ended.length} of ${crew.length} finished`}</Text>
       <Box flexDirection="row" columnGap={1}>
         {tile('Cost', usd !== null ? `$${usd.toFixed(2)}` : 'n/a', 'whole session, API rates')}
-        {tile('Tokens', compactTokens(tokens), 'agents, measured')}
+        {tile('Tokens', compactTokens(tokens), 'agents, excl. cache reads')}
         {tile('Time', agentClock(last - first), 'this crew')}
       </Box>
       <Text> </Text>
@@ -281,25 +283,29 @@ export const register: Register = on => {
     // a pill riding its leading edge, and the crew count beside a bobbing bot.
     if (e.surface !== 'terminal') {
       const { Svg } = $.ui.resolve(e) as unknown as { Svg: El }
-      const pct = tasks.length ? c.pct : Math.round((crewDone / Math.max(1, crew.length)) * 100)
+      // Tasks and agents count together, so a crew still running never shows as 100%.
+      const crewRunning = crew.some(a => a.status === 'running')
+      const units = tasks.length + crew.length, unitsDone = c.done + crewDone
+      const pct = Math.round((unitsDone / Math.max(1, units)) * 100)
       const done = pct >= 100 && allDone
       const active = tasks.find(t => t.status === 'in_progress')
-      const word = done ? 'Done' : (active?.activeForm || active?.subject || (crew.some(a => a.status === 'running') ? 'Agents working' : 'Next up')).split(/\s+/).slice(0, 2).join(' ')
-      const count = tasks.length ? `${c.done}/${c.total}` : `${crewDone}/${crew.length}`
+      const word = active ? pillWords(active.activeForm || active.subject) : crewRunning ? 'Agents' : 'Next up'
+      const count = active || !crewRunning ? `${c.done}/${c.total}` : `${crewDone}/${crew.length}`
       const label = done ? 'Done' : `${word} ${count}`
       const title = (project || 'This session').slice(0, 28)
       const dot = done ? '#2ec27e' : '#8b7cf6'
-      const running = crew.some(a => a.status === 'running')
+      const running = crewRunning
+      const crewHat = (crew.find(a => a.status === 'running') ?? crew[crew.length - 1])
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" columnGap={1}>
             <Text color={dot}>{'●'}</Text>
             <Text bold>{title}</Text>
-            <Svg source={trackSvg(pct, label, done ? 'done' : 'running', 300)} alt={`${title}: ${pct}% (${label})`} isInteractive />
+            <Svg source={trackSvg(pct, label, done ? 'done' : 'running', 300)} alt={`${title}: ${pct}% (${label})`} width={300} height={TRACK_H} />
             <Text bold>{`${pct}%`}</Text>
             {crew.length
               ? <Box flexDirection="row" alignItems="center" columnGap={1}>
-                  <Svg source={botSvg(done ? '#2ec27e' : '#ff6b35', { cell: 2.4, bounce: running })} alt="crew" isInteractive />
+                  <Svg source={botSvg(done || !crewHat ? '#2ec27e' : tier(crewHat.model, crewHat.type).color, { cell: 2.4, bounce: running })} alt="crew" {...botSize(2.4)} />
                   <Text>{`×${crew.length}`}</Text>
                 </Box>
               : null}

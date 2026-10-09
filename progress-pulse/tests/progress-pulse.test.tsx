@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { agentsText, botSvg, currentBatch, finished, fraction, modelName, spawned, stepped, stepText, tier, trackSvg } from '../hooks/agents'
+import { agentsText, botSvg, pillWords, currentBatch, finished, fraction, modelName, spawned, stepped, stepText, tier, trackSvg } from '../hooks/agents'
 import { bar, counts, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, upsert } from '../hooks/logic'
 import type { Task } from '../types'
 
@@ -215,6 +215,8 @@ test('agents: model names, tiers and the step a subagent is on', () => {
   expect(currentBatch(crew).length).toBe(1)
   expect(agentsText(crew, 61_000)).toContain('✓ Audit hooks')
   expect(trackSvg(40, 'Review 3/4', 'running')).toContain('Review 3/4')
+  expect(pillWords('Running the test suite...')).toBe('Running the test…')
+  expect(pillWords('Review')).toBe('Review')
   expect(botSvg('#ff6b35', { bounce: true })).toContain('animateTransform')
 })
 
@@ -237,8 +239,12 @@ test('a crew of subagents shows in the band, the pane and the text report', asyn
   const band = await $.ui.mount({ plugin: 'progress-pulse', surface: 'desktop', component: 'AbovePrompt', props: PROPS as never })
   const bandText = (await band.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
   expect(bandText).toContain('50%')
+  expect(bandText).not.toContain('100%')
   expect(bandText).toContain('×2')
-  expect((await band.findAll({ type: 'Svg' })).length).toBe(2)
+  const svgs = await band.findAll({ type: 'Svg' })
+  expect(svgs.length).toBe(2)
+  // Every vector has an exact box and none is an interactive frame (those drew white boxes on desktop).
+  for (const v of svgs) { expect(typeof v.props.width).toBe('number'); expect(typeof v.props.height).toBe('number'); expect(v.props.isInteractive).toBeFalsy() }
 
   const PANE = { bodyColumns: 80, bodyRows: 40, holdToasts: false, title: 'Progress' }
   const pane = await $.ui.mount({ plugin: 'progress-pulse', surface: 'desktop', component: 'Pane', requestId: 'progress-pulse', props: PANE as never } as never)

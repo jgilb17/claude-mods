@@ -82,6 +82,21 @@ const SPRITE = [
   '..b.bb.b..',
 ]
 
+// Drawn sizes, so the Svg element gets an exact box: without width and height the desktop app
+// sizes the frame itself, which is how the 0.2.0 band ended up with large white boxes.
+export const botSize = (cell = 4) => ({ width: 10 * cell, height: 10 * cell })
+export const TRACK_H = 22
+export const BAR_H = 4
+
+// The pill's words: the start of what is happening, cut at a word so it reads as a phrase.
+export function pillWords(text: string, max = 18): string {
+  const t = text.replace(/\.\.\.$|…$/, '').trim()
+  if (t.length <= max) return t
+  const cut = t.slice(0, max)
+  const sp = cut.lastIndexOf(' ')
+  return (sp > 6 ? cut.slice(0, sp) : cut).replace(/[\s,;:]+$/, '') + '…'
+}
+
 export function botSvg(hat: string, opts: { cell?: number; bounce?: boolean } = {}): string {
   const c = opts.cell ?? 4
   const w = SPRITE[0]!.length * c, hgt = SPRITE.length * c
