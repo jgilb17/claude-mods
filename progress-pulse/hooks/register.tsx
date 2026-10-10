@@ -19,6 +19,9 @@ const usageTokens = (u: { input_tokens?: number; output_tokens?: number; cache_c
   u ? (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) : 0
 
 const PANE = 'progress-pulse'
+// Shown in the pane header and the /progress reply, so which version is running is never a guess.
+// Bump together with .claude-plugin/plugin.json; the version test pins both.
+export const VERSION = '0.3.3'
 const CHEER_MS = 8000
 const QUIET_AFTER_DONE_MS = 15 * 60_000
 
@@ -238,7 +241,7 @@ export const register: Register = on => {
     const started = await read($, startA)
     const crewText = agentsText(currentBatch(await read($, agentsA)), now)
     const report = textReport(tasks, (await read($, projectA)) || 'this session', now - (started || now))
-    return { text: tasks.length || !crewText ? report + (crewText ? '\n' + crewText : '') : crewText }
+    return { text: (tasks.length || !crewText ? report + (crewText ? '\n' + crewText : '') : crewText) + `\n(progress-pulse ${VERSION})` }
   })
 
   // The session's own task list is the source of truth: every TaskCreate, TaskUpdate and
@@ -518,7 +521,10 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Text bold>{`${project || 'This session'}`}</Text>
+        <Text>
+          <Text bold>{`${project || 'This session'}`}</Text>
+          <Text dimColor>{`   progress-pulse ${VERSION}`}</Text>
+        </Text>
         <Text> </Text>
         {crewView}
         {crewView ? <Text bold>Session tasks</Text> : null}

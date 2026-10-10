@@ -1,3 +1,4 @@
+import { VERSION } from '../hooks/register'
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
@@ -357,4 +358,11 @@ test('Codex workers started as background commands get cards, a time estimate, a
   pane = await $.ui.mount({ plugin: 'progress-pulse', surface: 'desktop', component: 'Pane', requestId: 'progress-pulse', props: PANE as never } as never)
   text = (await pane.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
   expect(text).toContain('Finished · 1')
+})
+
+test('the running version is visible and matches the manifest', async ($, on) => {
+  world(on, [])
+  expect(VERSION).toBe('0.3.3')
+  const r = await $.command.run({ command: 'progress', args: '' } as never) as { text?: string }
+  expect(r.text).toContain('progress-pulse 0.3.3')
 })
