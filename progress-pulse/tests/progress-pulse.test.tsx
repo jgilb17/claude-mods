@@ -301,3 +301,37 @@ test('subagents are asked for a checklist, and plans off stops it', async ($, on
   await $.agent.spawn({ description: 'Count again', prompt: 'Count the files.', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' } as never)
   expect(prompts[1]).toBe('Count the files.')
 })
+
+test('cloud feed: progress lines go into the transcript only where bands cannot draw', async ($, on) => {
+  const posted: string[] = []
+  world(on, [])
+  on('session.append', async (_$, e, next) => { posted.push(((e as unknown as { message: { content: { text: string }[] } }).message.content[0]!.text)); return next(e) })
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'One', description: 'x' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Two', description: 'x' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as never)
+  expect(posted.length).toBe(0)
+  await $.command.run({ command: 'progress', args: 'feed on' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'completed' } as never)
+  expect(posted.length).toBe(1)
+  expect(posted[0]).toContain('100%')
+  expect(posted[0]).toContain('tasks 2/2')
+  expect(posted[0]).toContain('all tasks done')
+})
+
+test('cloud feed turns itself on in a cloud container, with no command', async ($, on) => {
+  const posted: string[] = []
+  world(on, [])
+  on('session.append', async (_$, e, next) => { posted.push(((e as unknown as { message: { content: { text: string }[] } }).message.content[0]!.text)); return next(e) })
+  on('process.run', async (_$, e) => ({ value: { exitCode: 0, stdout: (e as { argv: string[] }).argv.includes('CLAUDE_CODE_REMOTE') ? 'true\n' : 'repo\n', stderr: '' } }) as never)
+  on('command.register', async () => ({ value: undefined }) as never)
+  on('session.cwd', async () => ({ value: '/x/repo' }) as never)
+  on('session.start', async (_$, e) => ({ cwd: (e as { cwd: string }).cwd }) as never)
+  await $.session.start({ cwd: '/x/repo', surface: null, isInteractive: true } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'One', description: 'x' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Two', description: 'x' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as never)
+  expect(posted.length).toBe(1)
+  expect(posted[0]).toContain('50%')
+  expect(posted[0]).toContain('done: One')
+})

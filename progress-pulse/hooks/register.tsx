@@ -64,6 +64,7 @@ async function apply($: EngineInterface, change: (prev: Task[], now: number) => 
     if (m < 100) $.ui.toast(`${m}% of the way there: ${a.done} of ${a.total} done`)
   }
   if (all) $.ui.toast(`Every task done: ${a.total} of ${a.total}. Nice work.`, { timeoutMs: 8000 })
+  if (!landed.every(isDemo)) await postFeed($, all ? 'all tasks done' : `done: ${last.subject.slice(0, 50)}`)
 
   // A running tally per project per day, kept across sessions, for the pane's Today section.
   if (landed.every(isDemo)) return
@@ -74,6 +75,45 @@ async function apply($: EngineInterface, change: (prev: Task[], now: number) => 
     tally[project] = (tally[project] ?? 0) + landed.filter(t => !isDemo(t)).length
     await $.store.set(key, tally)
   } catch { /* the tally is a nicety; never let it break a tool call */ }
+}
+
+// The feed: sessions running in a cloud container (CLAUDE_CODE_REMOTE=true) are shown in the app
+// without mod bands or panes, so there progress is posted as short notice lines in the transcript
+// instead, automatically, at each real milestone. The model never reads these lines.
+let isRemote = false
+let lastFeed = ''
+async function feedMode($: EngineInterface): Promise<'auto' | 'on' | 'off'> {
+  try { return ((await $.store.get('feed')) as 'auto' | 'on' | 'off' | undefined) ?? 'auto' } catch { return 'auto' }
+}
+export function feedText(tasks: Task[], crew: Agent[], history: Record<string, number[]>, project: string, event: string): string {
+  const c = counts(tasks)
+  const crewDone = crew.filter(a => a.status !== 'running').length
+  const units = tasks.length + crew.length
+  const pct = Math.round(((c.done + crewDone) / Math.max(1, units)) * 100)
+  const cells = Math.round(pct / 10)
+  const parts = [`${'▓'.repeat(cells)}${'░'.repeat(10 - cells)} ${pct}%`]
+  if (tasks.length) parts.push(`tasks ${c.done}/${c.total}`)
+  if (crew.length) parts.push(`agents ${crewDone}/${crew.length} done`)
+  const lines = [`${project || 'session'}  ${parts.join('  ·  ')}  ·  ${event}`]
+  for (const a of crew.filter(x => x.status === 'running').slice(0, 4)) {
+    lines.push(`   ● ${a.name.slice(0, 40)}  ${progress(a, expectedSteps(history, a.type)).label.split(' · ')[0]}`)
+  }
+  return lines.join('\n')
+}
+async function postFeed($: EngineInterface, event: string): Promise<void> {
+  try {
+    const mode = await feedMode($)
+    if (mode === 'off' || (mode === 'auto' && !isRemote)) return
+    const tasks = await read($, tasksA)
+    const crew = currentBatch(await read($, agentsA))
+    if (!tasks.length && !crew.length) return
+    let history: Record<string, number[]> = {}
+    try { history = ((await $.store.get('stepHistory')) ?? {}) as Record<string, number[]> } catch { /* none yet */ }
+    const text = feedText(tasks, crew, history, await read($, projectA), event)
+    if (text === lastFeed) return
+    lastFeed = text
+    await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
+  } catch { /* the feed must never break the work it reports on */ }
 }
 
 // The Agents section: what the crew cost and how far each one has got.
@@ -158,11 +198,17 @@ export const register: Register = on => {
     const name = await projectName($)
     await update($, projectA, () => name)
     await $.command.register({ name: 'progress', description: 'Show live progress on what this session is working on' })
+    try { isRemote = ((await $.process.run(['printenv', 'CLAUDE_CODE_REMOTE'], { timeoutMs: 2000 })).stdout || '').trim() === 'true' } catch { isRemote = false }
     return r
   })
 
   on('command.run', { command: 'progress' }, async ($, e) => {
     await update($, hiddenA, () => false)
+    const feedArg = e.args.trim().match(/^feed (on|off|auto)$/)
+    if (feedArg) {
+      await $.store.set('feed', feedArg[1])
+      return { text: `Progress lines in the transcript: ${feedArg[1]}${feedArg[1] === 'auto' ? ' (cloud sessions only)' : ''}.` }
+    }
     const plansArg = e.args.trim().match(/^plans (on|off)$/)
     if (plansArg) {
       await $.store.set('agentPlans', plansArg[1] === 'on')
@@ -245,6 +291,7 @@ export const register: Register = on => {
         await update($, paneOpenedA, () => true)
         try { await $.ui.open({ id: PANE, title: 'Progress' }) } catch { /* a screen with no panes */ }
       }
+      await postFeed($, `agent started: ${(e.description || e.subagentType).slice(0, 50)}`)
     }
     return r
   }).catch(($, e, next) => next(e))
@@ -272,6 +319,8 @@ export const register: Register = on => {
           if (a && a.steps > 0) await $.store.set('stepHistory', recordSteps(((await $.store.get('stepHistory')) ?? {}) as Record<string, number[]>, a.type, a.steps))
         } catch { /* history is a nicety */ }
       }
+      const fin = (await read($, agentsA)).find(x => x.id === String(e.agentId))
+      await postFeed($, `agent ${ok ? 'finished' : 'stopped'}: ${(fin?.name ?? 'agent').slice(0, 50)}`)
       const batch = currentBatch(await read($, agentsA))
       if (batch.length > 1 && batch.every(a => a.status !== 'running')) {
         $.ui.toast(`Crew finished: ${batch.filter(a => a.status === 'done').length} of ${batch.length} agents done.`, { timeoutMs: 6000 })
