@@ -2,6 +2,7 @@ import type { Agent } from '../types'
 
 // What a model id reads as: claude-opus-5-5 -> Opus 5.5. Anything else is shown as given.
 export function modelName(id: string): string {
+  if (id === 'codex') return 'Codex'
   const m = /(opus|sonnet|haiku)-(\d+)(?:-(\d+))?/i.exec(id || '')
   if (!m) return id || 'inherit'
   return `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1).toLowerCase()} ${m[2]}${m[3] ? '.' + m[3] : ''}`
@@ -11,6 +12,7 @@ export function modelName(id: string): string {
 export type Tier = { label: string; color: string }
 export function tier(model: string, type: string): Tier {
   const m = (model || '').toLowerCase()
+  if (type === 'codex') return { label: 'codex', color: '#10a37f' }
   if (/explore|plan|review/i.test(type)) return { label: 'careful', color: '#e0a526' }
   if (m.includes('opus')) return { label: 'heavy', color: '#ff6b35' }
   if (m.includes('haiku')) return { label: 'light', color: '#2ec27e' }
@@ -70,9 +72,16 @@ export function fraction(a: Agent): number | null {
 // done over total. "est" is an estimate: steps taken over the typical step count for that agent
 // type, from agents that finished earlier, held at 90% until the agent actually finishes.
 export type Progress = { frac: number; kind: 'tasks' | 'est' | 'done' | 'failed'; label: string }
-export function progress(a: Agent, expected: number): Progress {
+export function progress(a: Agent, expected: number, now?: number): Progress {
   if (a.status === 'done') return { frac: 1, kind: 'done', label: '100%' }
   if (a.status === 'failed') return { frac: a.tasksTotal ? a.tasksDone / a.tasksTotal : 0, kind: 'failed', label: 'stopped' }
+  if (a.type === 'codex') {
+    // A Codex worker runs outside Claude, so its steps are invisible: time is the only signal.
+    // expected is then the typical run time in minutes.
+    const mins = Math.max(0, ((now ?? a.startedAt) - a.startedAt) / 60000)
+    const f = Math.min(0.9, mins / Math.max(1, expected))
+    return { frac: f, kind: 'est', label: `~${Math.round(f * 100)}% est. · ${Math.round(mins)}m of ~${Math.round(expected)}m` }
+  }
   if (a.tasksTotal > 0) {
     const f = a.tasksDone / a.tasksTotal
     return { frac: f, kind: 'tasks', label: `${Math.round(f * 100)}% · ${a.tasksDone}/${a.tasksTotal} tasks` }
@@ -84,10 +93,11 @@ export function progress(a: Agent, expected: number): Progress {
 // The typical number of steps an agent of this type takes, from the last 20 that finished:
 // the median for its type, else across all types, else 12 until there is history.
 export function expectedSteps(history: Record<string, number[]>, type: string): number {
+  if (type === 'codex') { const d = (history.codexMinutes ?? []).filter(n => n > 0).sort((x, y) => x - y); return d.length >= 3 ? Math.max(2, d[Math.floor(d.length / 2)]!) : 15 }
   const med = (xs: number[]) => { const s = [...xs].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]! }
   const own = (history[type] ?? []).filter(n => n > 0)
   if (own.length >= 3) return Math.max(3, med(own))
-  const all = Object.values(history).flat().filter(n => n > 0)
+  const all = Object.entries(history).filter(([k]) => k !== 'codexMinutes').flatMap(([, v]) => v).filter(n => n > 0)
   return all.length >= 3 ? Math.max(3, med(all)) : 12
 }
 export function recordSteps(history: Record<string, number[]>, type: string, steps: number): Record<string, number[]> {
@@ -203,7 +213,7 @@ export function agentsText(crew: Agent[], now: number): string {
   for (const a of crew) {
     const mark = a.status === 'running' ? '●' : a.status === 'done' ? '✓' : '✕'
     const t = tier(a.model, a.type)
-    const step = `${progress(a, 12).label.replace(/ · step.*$/, '')} · ${a.stepLabel}`
+    const step = `${progress(a, a.type === 'codex' ? 15 : 12, now).label.split(' · ')[0]} · ${a.stepLabel}`
     const took = clock((a.endedAt ?? now) - a.startedAt)
     lines.push(`  ${mark} ${a.name}  (${t.label}, ${modelName(a.model)})  ${a.status === 'running' ? step : a.status === 'done' ? 'finished' : 'failed'}  ·  ${a.tokens ? compactTokens(a.tokens) + ' tokens · ' : ''}${took}`)
   }

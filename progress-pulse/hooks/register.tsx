@@ -85,7 +85,7 @@ let lastFeed = ''
 async function feedMode($: EngineInterface): Promise<'auto' | 'on' | 'off'> {
   try { return ((await $.store.get('feed')) as 'auto' | 'on' | 'off' | undefined) ?? 'auto' } catch { return 'auto' }
 }
-export function feedText(tasks: Task[], crew: Agent[], history: Record<string, number[]>, project: string, event: string): string {
+export function feedText(tasks: Task[], crew: Agent[], history: Record<string, number[]>, project: string, event: string, now = 0): string {
   const c = counts(tasks)
   const crewDone = crew.filter(a => a.status !== 'running').length
   const units = tasks.length + crew.length
@@ -96,7 +96,7 @@ export function feedText(tasks: Task[], crew: Agent[], history: Record<string, n
   if (crew.length) parts.push(`agents ${crewDone}/${crew.length} done`)
   const lines = [`${project || 'session'}  ${parts.join('  ·  ')}  ·  ${event}`]
   for (const a of crew.filter(x => x.status === 'running').slice(0, 4)) {
-    lines.push(`   ● ${a.name.slice(0, 40)}  ${progress(a, expectedSteps(history, a.type)).label.split(' · ')[0]}`)
+    lines.push(`   ● ${a.name.slice(0, 40)}  ${progress(a, expectedSteps(history, a.type), now).label.split(' · ')[0]}`)
   }
   return lines.join('\n')
 }
@@ -109,7 +109,7 @@ async function postFeed($: EngineInterface, event: string): Promise<void> {
     if (!tasks.length && !crew.length) return
     let history: Record<string, number[]> = {}
     try { history = ((await $.store.get('stepHistory')) ?? {}) as Record<string, number[]> } catch { /* none yet */ }
-    const text = feedText(tasks, crew, history, await read($, projectA), event)
+    const text = feedText(tasks, crew, history, await read($, projectA), event, await $.clock.now())
     if (text === lastFeed) return
     lastFeed = text
     await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
@@ -142,7 +142,7 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
   const row = (a: Agent) => {
     const t = tier(a.model, a.type)
     const live = a.status === 'running'
-    const p = progress(a, expectedSteps(history, a.type))
+    const p = progress(a, expectedSteps(history, a.type), now)
     const pctColor = p.kind === 'est' ? undefined : t.color
     const mark = a.status === 'done' ? <Text color="#2ec27e">{'✓'}</Text> : a.status === 'failed' ? <Text color="#e5484d">{'✕'}</Text> : <Text color={t.color}>{'●'}</Text>
     return (
@@ -302,8 +302,48 @@ export const register: Register = on => {
     if (e.agentId) {
       const label = stepText(e.tool, e as unknown as Record<string, unknown>)
       await update($, agentsA, l => stepped(l, String(e.agentId), label))
+    } else if (e.tool === 'Bash' && r.deny === undefined) {
+      // A Codex worker started as a background command: it gets a card like any agent.
+      const bg = (r as { result?: { backgroundTaskId?: string } }).result?.backgroundTaskId
+      const cmd = String((e as { command?: string }).command ?? '')
+      if (bg && /\bcodex\b|codex-companion/i.test(cmd)) {
+        const now = await $.clock.now()
+        const name = String((e as { description?: string }).description || 'Codex worker')
+        await update($, agentsA, l => stepped(spawned(l, { id: `bg:${bg}`, name, type: 'codex', model: 'codex', background: true }, now), `bg:${bg}`, 'Working in its own worktree'))
+        if (!(await read($, paneOpenedA))) {
+          await update($, paneOpenedA, () => true)
+          try { await $.ui.open({ id: PANE, title: 'Progress' }) } catch { /* a screen with no panes */ }
+        }
+        await postFeed($, `codex worker started: ${name.slice(0, 50)}`)
+      }
     }
     return r
+  }).catch(($, e, next) => next(e))
+
+  // A background task finishing arrives as a notification prompt naming its task id.
+  on('prompt.submit', async ($, e, next) => {
+    try {
+      if ((e as { origin?: { kind?: string } }).origin?.kind === 'task-notification') {
+        const text = String(e.text ?? '')
+        const running = (await read($, agentsA)).filter(a => a.status === 'running' && a.id.startsWith('bg:') && text.includes(a.id.slice(3)))
+        if (running.length) {
+          const now = await $.clock.now()
+          const status = (text.match(/<status>\s*([a-z_]+)/i)?.[1] ?? (/\b(failed|killed|error)\b/i.test(text) ? 'failed' : 'completed')).toLowerCase()
+          const ok = status === 'completed' || status === 'success'
+          for (const a of running) {
+            await update($, agentsA, l => finished(l, a.id, ok, 0, now))
+            if (ok) {
+              try {
+                const h = ((await $.store.get('stepHistory')) ?? {}) as Record<string, number[]>
+                await $.store.set('stepHistory', recordSteps(h, 'codexMinutes', Math.max(1, Math.round((now - a.startedAt) / 60000))))
+              } catch { /* history is a nicety */ }
+            }
+            await postFeed($, `codex worker ${ok ? 'finished' : 'stopped'}: ${a.name.slice(0, 50)}`)
+          }
+        }
+      }
+    } catch { /* never block a prompt over a progress card */ }
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   // An agent's turn ending is the agent finishing: its tokens are what the API reported for it.
