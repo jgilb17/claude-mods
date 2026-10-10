@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Agent, Celebration, Task } from '../types'
 import { bar, counts, duration, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, today, upsert } from './logic'
-import { agentClock, agentsText, agentTasks, BAR_H, botSize, botSvg, pillWords, TRACK_H, compactTokens, currentBatch, finished, fraction, miniBarSvg, modelName, spawned, stepped, stepText, tier, trackSvg } from './agents'
+import { agentClock, agentsText, agentTasks, BAR_H, botSize, botSvg, pillWords, TRACK_H, compactTokens, currentBatch, expectedSteps, finished, miniBarSvg, PLAN_NOTE, progress, recordSteps, modelName, spawned, stepped, stepText, tier, trackSvg } from './agents'
 
 const tasksA = atom({ plugin: 'progress-pulse', key: 'tasks' } as const, [] as Task[])
 const startA = atom({ plugin: 'progress-pulse', key: 'sessionStart' } as const, 0)
@@ -83,6 +83,8 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
   const { Box, Text, Svg } = els
   let usd: number | null = null
   try { const u = await $.session.usage(); usd = u.cost ? u.cost.usd : null } catch { /* no ledger on this host */ }
+  let history: Record<string, number[]> = {}
+  try { history = ((await $.store.get('stepHistory')) ?? {}) as Record<string, number[]> } catch { /* no history yet */ }
   const tokens = crew.reduce((x, a) => x + a.tokens, 0)
   const first = Math.min(...crew.map(a => a.startedAt))
   const last = crew.some(a => a.status === 'running') ? now : Math.max(...crew.map(a => a.endedAt ?? now))
@@ -100,7 +102,8 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
   const row = (a: Agent) => {
     const t = tier(a.model, a.type)
     const live = a.status === 'running'
-    const step = a.tasksTotal ? `${a.tasksDone}/${a.tasksTotal} · ${a.stepLabel}` : a.stepLabel
+    const p = progress(a, expectedSteps(history, a.type))
+    const pctColor = p.kind === 'est' ? undefined : t.color
     const mark = a.status === 'done' ? <Text color="#2ec27e">{'✓'}</Text> : a.status === 'failed' ? <Text color="#e5484d">{'✕'}</Text> : <Text color={t.color}>{'●'}</Text>
     return (
       <Box key={a.id} flexDirection="row" columnGap={1} alignItems="center" marginBottom={1}>
@@ -111,10 +114,14 @@ async function crewSection($: EngineInterface, els: { Box: El; Text: El; Svg: El
             <Text color={t.color}>{'  ' + t.label}</Text>
             <Text dimColor>{`  ${modelName(a.model)} · ${a.type}`}</Text>
           </Text>
-          <Text dimColor={!live}>{live ? step : a.status === 'done' ? 'Finished' : 'Stopped before finishing'}</Text>
+          <Text dimColor={!live}>{live ? a.stepLabel : a.status === 'done' ? 'Finished' : 'Stopped before finishing'}</Text>
           {Svg
-            ? <Svg source={miniBarSvg(a.status === 'running' ? fraction(a) : 1, a.status === 'failed' ? '#e5484d' : t.color, 260)} alt="progress" width={260} height={BAR_H} />
-            : null}
+            ? <Box flexDirection="row" columnGap={1} alignItems="center">
+                <Svg source={miniBarSvg(p.frac, a.status === 'failed' ? '#e5484d' : a.status === 'done' ? '#2ec27e' : t.color, 220, p.kind)} alt={p.label} width={220} height={BAR_H} />
+                <Text bold={p.kind !== 'est'} dimColor={p.kind === 'est'} color={pctColor}>{p.kind === 'done' ? '100%' : p.label.split(' · ')[0]}</Text>
+              </Box>
+            : <Text color={pctColor} dimColor={p.kind === 'est'}>{`${'█'.repeat(Math.round(p.frac * 20))}${'░'.repeat(20 - Math.round(p.frac * 20))} ${p.label}`}</Text>}
+          {live && p.label.includes(' · ') ? <Text dimColor>{p.label.split(' · ').slice(1).join(' · ')}</Text> : null}
           <Text dimColor>{`${a.tokens ? compactTokens(a.tokens) + ' tokens · ' : ''}${agentClock((a.endedAt ?? now) - a.startedAt)}`}</Text>
         </Box>
         {mark}
@@ -156,6 +163,11 @@ export const register: Register = on => {
 
   on('command.run', { command: 'progress' }, async ($, e) => {
     await update($, hiddenA, () => false)
+    const plansArg = e.args.trim().match(/^plans (on|off)$/)
+    if (plansArg) {
+      await $.store.set('agentPlans', plansArg[1] === 'on')
+      return { text: plansArg[1] === 'on' ? 'Subagents will be asked to keep a short checklist, so their bars show measured progress.' : 'Subagents will no longer be asked for a checklist; their bars fall back to estimates.' }
+    }
     if (e.args.trim() === 'demo') {
       // A 12-second show of what a session looks like as it works through a list. Demo tasks
       // carry a demo- id, are never tallied, and vanish the moment a real task arrives.
@@ -223,7 +235,9 @@ export const register: Register = on => {
 
   // The crew: every subagent the session starts (Agent tool, workflows, forks) gets a card.
   on('agent.spawn', async ($, e, next) => {
-    const r = await next(e)
+    let plans = true
+    try { plans = (await $.store.get('agentPlans')) !== false } catch { /* default on */ }
+    const r = await next(plans && e.subagentType !== 'fork' && !e.prompt.includes('Progress tracking:') ? { ...e, prompt: e.prompt + PLAN_NOTE } : e)
     if (r.deny === undefined && r.agentId) {
       const now = await $.clock.now()
       await update($, agentsA, l => spawned(l, { id: r.agentId!, name: e.description || e.subagentType, type: e.subagentType, model: r.model || e.model || e.parentModel, background: e.background }, now))
@@ -252,6 +266,12 @@ export const register: Register = on => {
       const now = await $.clock.now()
       const ok = e.reason === 'answer'
       await update($, agentsA, l => finished(l, String(e.agentId), ok, usageTokens(e.usage), now))
+      if (ok) {
+        try {
+          const a = (await read($, agentsA)).find(x => x.id === String(e.agentId))
+          if (a && a.steps > 0) await $.store.set('stepHistory', recordSteps(((await $.store.get('stepHistory')) ?? {}) as Record<string, number[]>, a.type, a.steps))
+        } catch { /* history is a nicety */ }
+      }
       const batch = currentBatch(await read($, agentsA))
       if (batch.length > 1 && batch.every(a => a.status !== 'running')) {
         $.ui.toast(`Crew finished: ${batch.filter(a => a.status === 'done').length} of ${batch.length} agents done.`, { timeoutMs: 6000 })

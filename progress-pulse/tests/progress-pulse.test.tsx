@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { agentsText, botSvg, pillWords, currentBatch, finished, fraction, modelName, spawned, stepped, stepText, tier, trackSvg } from '../hooks/agents'
+import { agentTasks, agentsText, botSvg, expectedSteps, miniBarSvg, pillWords, progress, recordSteps, currentBatch, finished, fraction, modelName, spawned, stepped, stepText, tier, trackSvg } from '../hooks/agents'
 import { bar, counts, eta, fromTodos, gradient, milestonesCrossed, runs, textReport, upsert } from '../hooks/logic'
 import type { Task } from '../types'
 
@@ -258,6 +258,8 @@ test('a crew of subagents shows in the band, the pane and the text report', asyn
   expect(paneText).toContain('12k')
   expect(paneText).toContain('Running · 1')
   expect(paneText).toContain('Listing hook files')
+  expect(paneText).toContain('~8% est.')
+  expect(paneText).toContain('100%')
   expect(paneText).toContain('Finished · 1')
   expect(paneText).toContain('careful')
   expect(paneText).toContain('heavy')
@@ -269,4 +271,33 @@ test('a crew of subagents shows in the band, the pane and the text report', asyn
   const r = await $.command.run({ command: 'progress', args: '' } as never) as { text?: string }
   expect(r.text).toContain('Agents  1 of 2 finished')
   expect(r.text).toContain('● Audit the hooks')
+})
+
+test('agent bars show real progress: measured from a checklist, otherwise a labeled estimate, never a loop', () => {
+  let crew = spawned([], { id: 'a1', name: 'Audit', type: 'general-purpose', model: 'claude-sonnet-4-6', background: false }, 0)
+  crew = agentTasks(crew, 'a1', { created: 4 })
+  crew = agentTasks(crew, 'a1', { completed: 1 })
+  expect(progress(crew[0]!, 12)).toMatchObject({ frac: 0.25, kind: 'tasks', label: '25% · 1/4 tasks' })
+  let b = spawned([], { id: 'b', name: 'Search', type: 'Explore', model: 'claude-haiku-4-5', background: false }, 0)
+  for (let i = 0; i < 6; i++) b = stepped(b, 'b', 'Reading')
+  let h: Record<string, number[]> = {}
+  for (const n of [10, 12, 14]) h = recordSteps(h, 'Explore', n)
+  expect(expectedSteps(h, 'Explore')).toBe(12)
+  expect(progress(b[0]!, 12)).toMatchObject({ frac: 0.5, kind: 'est', label: '~50% est. · step 6 of ~12' })
+  for (let i = 0; i < 20; i++) b = stepped(b, 'b', 'Reading')
+  expect(progress(b[0]!, 12).frac).toBe(0.9)
+  expect(miniBarSvg(0.5, '#123456', 200, 'tasks')).not.toContain('<animate')
+  expect(miniBarSvg(0.5, '#123456', 200, 'tasks')).toContain('width="100"')
+})
+
+test('subagents are asked for a checklist, and plans off stops it', async ($, on) => {
+  const prompts: string[] = []
+  world(on, [])
+  on('agent.spawn', async (_$, e) => { prompts.push((e as { prompt: string }).prompt); return { agentId: 'p' + prompts.length, model: 'claude-haiku-4-5' } as never })
+  on('ui.open', async () => ({ value: { isPlaced: true } }) as never)
+  await $.agent.spawn({ description: 'Count files', prompt: 'Count the files.', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' } as never)
+  expect(prompts[0]).toContain('Progress tracking:')
+  await $.command.run({ command: 'progress', args: 'plans off' } as never)
+  await $.agent.spawn({ description: 'Count again', prompt: 'Count the files.', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' } as never)
+  expect(prompts[1]).toBe('Count the files.')
 })

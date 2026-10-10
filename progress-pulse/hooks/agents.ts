@@ -63,8 +63,40 @@ export function currentBatch(list: Agent[]): Agent[] {
 export function fraction(a: Agent): number | null {
   if (a.status !== 'running') return 1
   if (a.tasksTotal > 0) return a.tasksDone / a.tasksTotal
-  return null // running with no task list: drawn as an indeterminate shimmer
+  return null
 }
+
+// How far an agent has got, and how we know. "tasks" is measured: the agent's own checklist,
+// done over total. "est" is an estimate: steps taken over the typical step count for that agent
+// type, from agents that finished earlier, held at 90% until the agent actually finishes.
+export type Progress = { frac: number; kind: 'tasks' | 'est' | 'done' | 'failed'; label: string }
+export function progress(a: Agent, expected: number): Progress {
+  if (a.status === 'done') return { frac: 1, kind: 'done', label: '100%' }
+  if (a.status === 'failed') return { frac: a.tasksTotal ? a.tasksDone / a.tasksTotal : 0, kind: 'failed', label: 'stopped' }
+  if (a.tasksTotal > 0) {
+    const f = a.tasksDone / a.tasksTotal
+    return { frac: f, kind: 'tasks', label: `${Math.round(f * 100)}% · ${a.tasksDone}/${a.tasksTotal} tasks` }
+  }
+  const f = Math.min(0.9, a.steps / Math.max(1, expected))
+  return { frac: f, kind: 'est', label: `~${Math.round(f * 100)}% est. · step ${a.steps} of ~${Math.round(expected)}` }
+}
+
+// The typical number of steps an agent of this type takes, from the last 20 that finished:
+// the median for its type, else across all types, else 12 until there is history.
+export function expectedSteps(history: Record<string, number[]>, type: string): number {
+  const med = (xs: number[]) => { const s = [...xs].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]! }
+  const own = (history[type] ?? []).filter(n => n > 0)
+  if (own.length >= 3) return Math.max(3, med(own))
+  const all = Object.values(history).flat().filter(n => n > 0)
+  return all.length >= 3 ? Math.max(3, med(all)) : 12
+}
+export function recordSteps(history: Record<string, number[]>, type: string, steps: number): Record<string, number[]> {
+  return { ...history, [type]: [...(history[type] ?? []), steps].slice(-20) }
+}
+
+// Appended to every subagent's task so most agents carry a real checklist, which makes their bar
+// a measured percentage instead of an estimate. Off with /progress plans off.
+export const PLAN_NOTE = '\n\nProgress tracking: if you have a task list tool (TaskCreate/TaskUpdate or TodoWrite), start by breaking this job into 3 to 6 short tasks, and mark each one completed the moment it is done. Keep the list to this job only.'
 
 export const compactTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`)
 
@@ -86,7 +118,7 @@ const SPRITE = [
 // sizes the frame itself, which is how the 0.2.0 band ended up with large white boxes.
 export const botSize = (cell = 4) => ({ width: 10 * cell, height: 10 * cell })
 export const TRACK_H = 22
-export const BAR_H = 4
+export const BAR_H = 6
 
 // The pill's words: the start of what is happening, cut at a word so it reads as a phrase.
 export function pillWords(text: string, max = 18): string {
@@ -147,14 +179,14 @@ export function trackSvg(pct: number, label: string, state: 'running' | 'done', 
     `<text x="${pillX + pillW / 2}" y="${h / 2 + 4}" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#fff">${pillText}</text>${pulse}</g></svg>`
 }
 
-// A thin per-agent bar: solid when it has a known fraction, a sliding stripe when it does not.
-export function miniBarSvg(frac: number | null, color: string, width = 260): string {
-  const h = 4
-  const base = `<rect x="0" y="0" width="${width}" height="${h}" rx="2" fill="#8a8f98" opacity="0.2"/>`
-  if (frac === null) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}">${base}<rect x="0" y="0" width="${width * 0.3}" height="${h}" rx="2" fill="${color}"><animate attributeName="x" from="-${width * 0.3}" to="${width}" dur="1.3s" repeatCount="indefinite"/></rect></svg>`
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}">${base}<rect x="0" y="0" width="${Math.round(width * Math.max(0, Math.min(1, frac)))}" height="${h}" rx="2" fill="${color}"/></svg>`
+// A thin per-agent bar filled to its real fraction. No motion: the fill is the information.
+// Measured progress is solid; an estimate is drawn lighter so the two never look the same.
+export function miniBarSvg(frac: number | null, color: string, width = 260, kind: 'tasks' | 'est' | 'done' | 'failed' = 'tasks'): string {
+  const h = 6, f = Math.max(0, Math.min(1, frac ?? 0)), w = Math.round(width * f)
+  const fill = kind === 'est'
+    ? `<rect x="0" y="0" width="${w}" height="${h}" rx="3" fill="${color}" opacity="0.45"/>`
+    : `<rect x="0" y="0" width="${w}" height="${h}" rx="3" fill="${color}"/>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}"><rect x="0" y="0" width="${width}" height="${h}" rx="3" fill="#8a8f98" opacity="0.2"/>${fill}</svg>`
 }
 
 const clock = (ms: number) => {
@@ -171,7 +203,7 @@ export function agentsText(crew: Agent[], now: number): string {
   for (const a of crew) {
     const mark = a.status === 'running' ? '●' : a.status === 'done' ? '✓' : '✕'
     const t = tier(a.model, a.type)
-    const step = a.tasksTotal ? `${a.tasksDone}/${a.tasksTotal} · ${a.stepLabel}` : a.stepLabel
+    const step = `${progress(a, 12).label.replace(/ · step.*$/, '')} · ${a.stepLabel}`
     const took = clock((a.endedAt ?? now) - a.startedAt)
     lines.push(`  ${mark} ${a.name}  (${t.label}, ${modelName(a.model)})  ${a.status === 'running' ? step : a.status === 'done' ? 'finished' : 'failed'}  ·  ${a.tokens ? compactTokens(a.tokens) + ' tokens · ' : ''}${took}`)
   }
